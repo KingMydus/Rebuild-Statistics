@@ -1,0 +1,211 @@
+﻿'intent: when run program will open excel and plot the times it takes to rebuild each part within the opened assembly
+'use case: this program will help show which parts or subassies are most intensive on your machine and show what could be optimized
+'note: these numbers are not 100% accurate and should be taken with a grain of salt, the numbers will be skewed due to background processes
+
+'authors: Derek McGuire, Ian McDonald, Michael Dowse
+
+'rev 1
+'date: 08/11/2021
+
+Sub Main() 
+	
+	iterations = InputBox("How many iterations would you like to run?", "Iterations", "3")'gets the number of runs from user
+	iterations = CDblAny(iterations)
+	If iterations = vbFalse Then GoTo EndOfFunction 'if you click cancel it quits the program
+		
+	If checkErrors() Then
+		'this checks the design doctor for errors, if found it asks to continue with the program
+		errorContinue = MessageBox.Show("It seems that your assembly has some unresolved errors. WARNING continuing with the program can cause more problems, do you wish to continue?", "Rebuild stats Error checker", MessageBoxButtons.YesNo)
+		If errorContinue = vbNo Then GoTo EndOfFunction
+	Else
+		'MessageBox.Show("no errors found", "Rebuild stats error checker")
+	End If
+	
+	'inventor setup
+	Dim Oapp = ThisApplication 'inventor app
+	Dim Oassy = Oapp.ActiveDocument 'current assembly
+	Dim numParts = Oassy.AllReferencedDocuments.Count'gets total amount of parts in the assembly
+	Dim outputString(numParts) As String
+	'excel setup
+    ExcelSheet = OpenExcel()'sets the variable holding the sheet used for data insertion
+	ExcelSheet.cells(2, 1) = "Part Name" 
+	ExcelSheet.columns("A").columnwidth= 22
+	
+	'loop variable setup
+	Dim partCounter As Integer'keeps track of part inside of eack run, resets on every run
+	Dim progressCounter As Integer'keeps track of parts in total out of all runs(if there are ten parts @ 5 runs this will increment to 50[needed for progress bar])
+	progressCounter = 0
+	
+	Dim TtlStartTime = Now 'sets the overall time start point(not used)
+	For runCounter= 0 To CDblAny(iterations)-1'loops for how many runs/iterations user specified
+		partCounter = 0
+		For Each Opart As Inventor.Document In Oassy.AllReferencedDocuments'loops through each part in the assembly and rebuilds it
+			On Error Resume Next'keeps inventor from crashing if the above loop references a non rebuilable entity
+			Dim RebuildStartTime = Now 'sets the start point for the rebuild
+			Opart.Rebuild()'rebuilds currently referenced part
+			Dim RebuildTime As TimeSpan = Now - RebuildStartTime'the time it took for the current part to rebuild
+			'this if statement checks if this is the first run or not(to add in the part names into column a)
+			If runCounter= 0 Then
+				ExcelSheet.cells(partCounter + 3, runcounter+1) = Opart.DisplayName'adds partname to column a
+				ExcelSheet.cells(partCounter + 3, runCounter+ 2) = RebuildTime.TotalSeconds'adds rebuild time to column b
+				updateProgress(progressCounter,runcounter,numParts*iterations,iterations,vbFalse,ExcelSheet,TtlStartTime) 'invokes the updateprogress function which updates the progressbar in cell 1
+				'^^^^ set argument 5 to vbtrue to skip the progress bar function for very large builds ^^^^^^
+				'heading setup for each run
+				If partCounter  = 0 Then
+					ExcelSheet.cells(2, 2) = "Run 1"
+				End If
+			Else
+				If partCounter = 0 Then
+					ExcelSheet.cells(2, runCounter+ 2) = "Run " & runCounter+ 1
+				End If
+				'next two lines will add the rebuild times for the second and so on runs along with updating the progressbar
+				ExcelSheet.cells(partCounter + 3, runCounter+ 2) = RebuildTime.TotalSeconds
+				updateProgress(progressCounter,runcounter,numParts*iterations,iterations,vbFalse,ExcelSheet,TtlStartTime)
+			End If
+			
+			'loop variable increment
+			partCounter = partCounter + 1
+			progressCounter = progressCounter + 1
+		Next
+	Next
+	
+	runTotals(iterations,partCounter,excelsheet)'adds totals to bottom
+	
+	runAverages(iterations, partCounter, excelsheet,numparts)'adds averages to right
+	
+	excelsheet.cells(1, 1).value = 1
+	
+	excelsheet.range("e1:f1").value = ""
+	iLogicVb.UpdateWhenDone = True'updates all parts in assy due to rebuilds(no changes took place this is just cosmetic for the most part)
+	Dim EndTrap As Boolean
+	
+	If EndTrap = vbTrue Then
+		EndOfFunction :'this allows a goto function to end the code instantly
+		MessageBox.Show("Canceled", "Rebuild Statistics")
+	End If
+	
+	End Sub
+
+Function runAverages(iterations As Integer,partCounter As Integer, excelsheet As Object,numparts As Integer)
+	'adds the averages times to the final column, just inserts excel formula to make it do all the thinking
+	excelsheet.cells(2, CDblAny(iterations)+ 2) = "Average" 
+	For avgloop = 3 To partCounter + 2
+		totalRuns = CDblAny(iterations)
+		excelsheet.cells(avgloop, totalRuns + 2) = "=average(b" & avgloop & ":" & Chr(totalRuns + 65) & avgloop & ")"	
+	Next	
+
+	'sets the conditional formatting for the color scale on the averages
+	cs = excelsheet.range(excelsheet.cells(3,iterations+2),excelsheet.cells(numParts+2,iterations+2))
+	With cs.FormatConditions.AddColorScale(ColorScaleType :=3)
+		'the lower number colour is GREEN
+		With .ColorScaleCriteria(1)
+	        .FormatColor.Color = RGB(0, 255, 0)
+	        '.Type = xlConditionValueNumber
+	    End With
+	    'the middle colour is YELLOW
+	    With .ColorScaleCriteria(2)
+	        .FormatColor.Color = RGB(255, 255, 0)
+	        '.Type = xlConditionValueNumber
+	    End With
+		'the high number colour is RED
+	    With .ColorScaleCriteria(3)
+	        .FormatColor.Color = RGB(255, 0, 0)
+	        '.Type = xlConditionValueLowestValue
+	    End With
+	End With
+End Function
+
+Function runTotals(iterations As Integer,partCounter As Integer, excelsheet As Object)
+	'sets the totals at the bottom of the sheet, just inserts excel formula to make it do all the thinking
+	excelsheet.cells(partCounter + 4, 1).value = "Total"
+	For runCounter= 1 To CDblAny(iterations)
+		excelsheet.cells(partCounter + 4, runCounter + 1) = "=sum(" & Chr(runCounter + 65) & 1 & ":" & Chr(runCounter + 65) & partCounter + 1 & ")"
+		excelsheet.cells(partCounter + 4, runCounter+ 1).clearformats
+	Next 
+End Function
+
+Function updateProgress(currentpart As Integer,currentrun As Integer,totalparts As Integer, numberOfRuns As Integer,lite As Boolean,excelsheet As Object,TtlStartTime As date)
+	'updates the progress bar at the top with the number and the color for the databar
+	If Not lite Then
+		'the next two lines interpolates the total progress of how many parts have been calculated to 100
+		progress = lerp(currentpart, 0, totalparts, 0, 100)
+		cfrange = excelsheet.range("A1:D1")
+		cfrange.value = progress / 100
+		'this small if statement below adds the estimated amount of time left for the calculations to run
+		If totalparts > 10 And currentpart > 5 Then 'the first number is how many total parts are needed to add the est time function, the second number is which part to start with
+			excelsheet.range("e1").value = "est. time"
+			Dim current As TimeSpan = Now - TtlStartTime
+			excelsheet.range("f1").value = Round((current.TotalSeconds/currentpart)*(totalparts - currentpart),2) &"s"
+		End If
+		If currentrun = 0 Then
+			excelsheet.range("A1:D1").merge'merges the top 5 cells, just to make the progress bar big and easy to read 
+			'this next chunk just adds the conditional format to show the progress bar
+		'End If
+			'cfrange = excelsheet.range("A1:D1")
+			cfrange.numberformat = "0.00%"
+			cfrange.FormatConditions.AddDatabar
+			With cfrange.FormatConditions(1)
+				.MinPoint.Modify( newtype:=xlConditionValuePercent, newvalue:=0)
+				.MaxPoint.Modify( newtype:=xlConditionValuePercent, newvalue:=1)
+			End With
+	    End If
+		With cfrange.FormatConditions(1).BarColor
+			.Color = RGB(255-lerp(progress,0,100,0,255),lerp(progress,0,100,0,255),0)
+			.TintAndShade = 0
+		End With
+		cfrange.FormatConditions(1).BarFillType = xlDataBarFillSolid
+		cfrange.FormatConditions(1).Direction = xlContext
+		cfrange.FormatConditions(1).NegativeBarFormat.ColorType = xlDataBarColor
+		cfrange.FormatConditions(1).BarBorder.Type = xlDataBarBorderNone
+		With cfrange.FormatConditions(1).NegativeBarFormat.Color
+			.Color = 255
+			.TintAndShade = 0
+		End With
+
+	End If
+End Function
+
+Function lerp(input As Integer, x0 As Integer, x1 As Integer, y0 As Integer, y1 As Integer)
+	'linear interpolation function
+	retval = y0 + (input - x0) * (y1 - y0) / (x1 - x0)
+	lerp = retval
+End Function
+
+Function OpenExcel()
+	myXLS_File = ThisDoc.PathAndFileName(False) & ".xlsx"
+	
+	'define Excel Application object
+	excelApp = CreateObject("Excel.Application")
+	'set Excel to run visibly, change to false if you want to run it invisibly
+	excelApp.Visible = True
+	'suppress prompts (such as the compatibility checker)
+	excelApp.DisplayAlerts = False
+
+	'check for existing file 
+'    If Dir(myXLS_File) <> "" Then
+'    'workbook exists, open it
+'    excelWorkbook = excelApp.Workbooks.Open(myXLS_File)
+'    ExcelSheet = excelWorkbook.Worksheets(1)
+    'Else
+    'workbook does NOT exist, so create a new one
+    excelWorkbook = excelApp.Workbooks.Add
+	openexcel = excelWorkbook.Worksheets(1)
+	Return excelWorkbook.Worksheets(1)
+End Function
+
+ Function checkErrors() As Boolean 
+	'checks the error manager for any active errors in the current application
+    Dim errorMng As ErrorManager
+    errorMng = ThisApplication.ErrorManager
+    
+    Dim errors As String
+    errors = errorMng.AllMessages
+		
+	If errors <>"<ErrorsAndWarnings/>" or ThisApplication.UserInterfaceManager.Ribbons.Item("Drawing").QuickAccessControls.Item("AppDesignDoctorCmd").ControlDefinition.Enabled = True Then
+		checkerrors = vbTrue
+	else 
+		checkErrors  = vbFalse
+	End If
+	'https://forums.autodesk.com/t5/inventor-ilogic-api-vba-forum/vba-check-design-doctor-for-errors-in-drawing/td-p/3809941
+	'https://forums.autodesk.com/t5/inventor-ilogic-api-vba-forum/bug-with-checking-errormanager-with-vba/m-p/4932720
+end function
